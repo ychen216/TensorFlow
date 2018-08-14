@@ -9,18 +9,25 @@ def bulid_model(features, params):
     for units in params['units']:
         layer = tf.layers.dense(layer, units=units, activation=tf.nn.relu)
     # output layer
-    logits = tf.layers.dense(layer, 1, activation=tf.nn.sigmoid)
-    return tf.reshape(logits, (-1,))
+    logits = tf.layers.dense(layer, 1, activation=None)
+    return logits
 
 
 def model_fn(features, labels, mode, params):
 
     logits = bulid_model(features, params)
+    labels = tf.reshape(features['Cis_click_reward'], (-1, 1))
+    loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits)
+
         op = tf.train.AdamOptimizer().minimize(loss=loss, global_step=tf.train.get_global_step())
         return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=op)
+
+    if mode == tf.estimator.ModeKeys.EVAL:
+        accuracy = tf.metrics.accuracy(labels=labels, predictions=logits)
+        metrics = {'accuracy': accuracy}
+        return tf.estimator.EstimatorSpec(mode, loss=loss, eval_metric_ops=metrics)
 
 def main():
     feature_columns = [tf.feature_column.numeric_column(key='CC_pctr_list'), ]
