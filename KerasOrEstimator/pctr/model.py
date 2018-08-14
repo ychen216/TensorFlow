@@ -1,13 +1,12 @@
 import tensorflow as tf
 
 file_list = ['hdfs://default/home/rl/reco/samples/20180808/0000/nonterminal.tfrecords/part-r-00070', ]
-feature_columns = [tf.feature_column.numeric_column(key='CC_pctr_list'),
-                   tf.feature_column.numeric_column(key='Cis_click_reward'), ]
+feature_columns = [tf.feature_column.numeric_column(key='CC_pctr_list'), ]
 
 
 def input_fn():
     dataset = tf.data.TFRecordDataset(filenames=file_list)
-
+    # tf.parse_example 接收的是是batch_examples 所以必须先对dataset做batch操作
     dataset = dataset.shuffle(1000).repeat().batch(batch_size=32)
     def parse_example(serialized_example):
         feature = tf.parse_example(
@@ -37,9 +36,11 @@ def bulid_model(features, params):
 def model_fn(features, mode, params):
 
     logits = bulid_model(features, params)
-    labels = tf.reshape(features['Cis_click_reward'], (-1, 1))
-    loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits)
-
+    labels = tf.zeros((32,1),dtype=tf.int32)
+    print(features,labels,logits)
+    # loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits)
+    loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits)
+    print(loss)
     if mode == tf.estimator.ModeKeys.TRAIN:
 
         op = tf.train.AdamOptimizer().minimize(loss=loss, global_step=tf.train.get_global_step())
@@ -55,7 +56,6 @@ def main():
 
     model = tf.estimator.Estimator(
         model_fn=model_fn,
-        model_dir='./checkpoint',
         params={
             'units': [20, 10],
             'feature_columns': feature_columns,
