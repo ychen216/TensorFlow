@@ -1,11 +1,14 @@
 import tensorflow as tf
 
 file_list = ['hdfs://default/home/rl/reco/samples/20180808/0000/nonterminal.tfrecords/part-r-00070', ]
-feature_columns = [tf.feature_column.numeric_column(key='CC_pctr_list'), ]
+feature_columns = [tf.feature_column.numeric_column(key='CC_pctr_list'),
+                   tf.feature_column.numeric_column(key='Cis_click_reward'), ]
+
 
 def input_fn():
     dataset = tf.data.TFRecordDataset(filenames=file_list)
 
+    dataset = dataset.shuffle(1000).repeat().batch(batch_size=32)
     def parse_example(serialized_example):
         feature = tf.parse_example(
             serialized_example,
@@ -17,7 +20,7 @@ def input_fn():
         return feature
 
     dataset = dataset.map(parse_example)
-    dataset = dataset.shuffle(1000).repeat().batch(batch_size=32).make_one_shot_iterator()
+    dataset = dataset.make_one_shot_iterator()
     return dataset.get_next()
 
 def bulid_model(features, params):
@@ -31,7 +34,7 @@ def bulid_model(features, params):
     return logits
 
 
-def model_fn(features, labels, mode, params):
+def model_fn(features, mode, params):
 
     logits = bulid_model(features, params)
     labels = tf.reshape(features['Cis_click_reward'], (-1, 1))
