@@ -32,7 +32,7 @@ def main():
             'feature_columns': feature_columns,
         }
     )
-    train_result = model.train(input_fn=input_fn)
+    train_result = model.train(input_fn=input_fn, steps=1000)
     print(train_result)
 
 
