@@ -2,7 +2,7 @@ import tensorflow as tf
 import os
 
 HEIGHT = 32
-WIDTH = 32git
+WIDTH = 32
 DEPTH = 3
 
 
