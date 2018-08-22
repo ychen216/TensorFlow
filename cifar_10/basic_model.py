@@ -1,72 +1,136 @@
 import tensorflow as tf
-import os
 
-HEIGHT = 32
-WIDTH = 32
-DEPTH = 3
+"""ResNet model.
+Related papers:
+https://arxiv.org/pdf/1603.05027v2.pdf
+https://arxiv.org/pdf/1512.03385v1.pdf
+https://arxiv.org/pdf/1605.07146v1.pdf
+"""
 
 
-class Cifar10Dataset(object):
-    """ Cifar10 DateSet """
+class ResNet(object):
+    """ResNet model."""
 
-    def __init__(self, data_dir, subset='train', use_distortion=True):
-        self._data_dir = data_dir
-        self._subset = subset
-        self._use_distortion = use_distortion
+    def __init__(self, is_training, data_format, batch_norm_decay, batch_norm_epsilon):
+        """ResNet constructor.
+        Args:
+          is_training: if build training or inference model.
+          data_format: the data_format used during computation.
+                       one of 'channels_first' or 'channels_last'.
+        """
+        self._batch_norm_decay = batch_norm_decay
+        self._batch_norm_epsilon = batch_norm_epsilon
+        self._is_training = is_training
+        assert data_format in ('channels_first', 'channels_last')
+        self._data_format = data_format
 
-    def get_filenames(self):
-        if self._subset in ['train', 'eval', 'validation']:
-            return [os.path.join(self._data_dir, self._subset + '.tfrecords')]
-        else:
-            raise ValueError('Invalid data subset "%s"' % self._subset)
+    def forward_pass(self, x):
+        raise NotImplementedError('forward_pass() is implemented in ResNet sub classes')
 
-    def preprocess(self, image):
-        if self._subset == 'train' and self._use_distortion:
-            # Pad 4 pixels on each dimension of feature map, done in mini-batch
-            image = tf.image.resize_image_with_crop_or_pad(image, 40, 40)
-            image = tf.random_crop(image, [HEIGHT, WIDTH, DEPTH])
-            image = tf.image.random_flip_left_right(image)
-        return image
+    def _residual_v1(self, x, kernel_size, in_filter, out_filter, stride, activate_before_residual=False):
+        """Residual unit with 2 sub layers, using Plan A for shortcut connection."""
 
-    def parse(self, serialized_example):
-        features = tf.parse_single_example(
-            serialized_example,
-            features={
-                'image': tf.FixedLenFeature([], tf.string),
-                'label': tf.FixedLenFeature([], tf.int64),
-            }
-        )
-        image = tf.decode_raw(features['image'], tf.int8)
-        image.set_shape([DEPTH * HEIGHT * WIDTH])
-        image = tf.cast(tf.reshape(image, [DEPTH, HEIGHT, WIDTH]), tf.float32)
-        label = tf.cast(features['label'], tf.int32)
-        if self._subset == 'train' and self._use_distortion:
-            image = self.preprocess(image)
-        return image, label
+        del activate_before_residual
+        with tf.name_scope('residual_v1') as name_scope:
+            orig_x = x
 
-    def make_batch(self, batch_size=32):
-        filenames = self.get_filenames()
-        dataset = tf.data.TFRecordDataset(filenames).repeat()
-        dataset = dataset.map(self.parse, num_parallel_calls=batch_size)
-        if self._subset == 'train':
-            min_queue_examples = int(
-                Cifar10Dataset.num_examples_per_epoch(self._subset) * 0.4)
-            # Ensure that the capacity is sufficiently large to provide good random
-            # shuffling.
-            dataset = dataset.shuffle(buffer_size=min_queue_examples + 3 * batch_size)
+            x = self._cnn(x, kernel_size, out_filter, stride)
+            x = self._batch_norm(x)
+            x = tf.nn.relu(x)
 
-        dataset = dataset.batch(batch_size)
-        iterator = dataset.make_one_shot_iterator()
-        images, labels = iterator.next()
-        return images, labels
+            x = self._cnn(x, kernel_size, out_filter, 1)
+            x = self._batch_norm(x)
 
-    @staticmethod
-    def num_examples_per_epoch(subset='train'):
-        if subset == 'train':
-            return 45000
-        elif subset == 'validation':
-            return 5000
-        elif subset == 'eval':
-            return 10000
-        else:
-            raise ValueError('Invalid data subset "%s"' % subset)
+            if in_filter != out_filter:
+                orig_x = self._avg_pool(orig_x, stride, stride)
+                pad = (out_filter - in_filter) // 2
+            if self._data_format == 'channels_first':
+                orig_x = tf.pad(orig_x, [[0, 0], [pad, pad], [0, 0], [0, 0]])
+            else:
+                orig_x = tf.pad(orig_x, [[0, 0], [0, 0], [0, 0], [pad, pad]])
+
+        x = tf.nn.relu(tf.add(x, orig_x))
+
+        tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
+        return x
+
+    def _residual_v2(self, x, in_filter, out_filter, stride, activate_before_residual=False):
+        """Residual unit with 2 sub layers with preactivation, plan A shortcut."""
+
+        with tf.name_scope('residual_v2') as name_scope:
+            if activate_before_residual:
+                x = self._batch_norm(x)
+                x = self._relu(x)
+                orig_x = x
+            else:
+                orig_x = x
+                x = self._batch_norm(x)
+                x = tf.nn.relu(x)
+
+            x = self._cnn(x, 3, out_filter, stride)
+
+            x = self._batch_norm(x)
+            x = self._relu(x)
+            x = self._cnn(x, 3, out_filter, [1, 1, 1, 1])
+
+        if in_filter != out_filter:
+            pad = (out_filter - in_filter) // 2
+            orig_x = self._avg_pool(orig_x, stride, stride)
+            if self._data_format == 'channels_first':
+                orig_x = tf.pad(orig_x, [[0, 0], [pad, pad], [0, 0], [0, 0]])
+            else:
+                orig_x = tf.pad(orig_x, [[0, 0], [0, 0], [0, 0], [pad, pad]])
+
+        x = tf.add(x, orig_x)
+
+        tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
+        return x
+
+    def _cnn(self, x, kernel_size, filters, strides, is_atrous=False):
+        """
+        CNN 2D
+        :param x:
+        :param kernel_size:
+        :param filters:
+        :param strides:
+        :param is_atrous: atrous convolution
+        :return:
+        """
+        padding = 'SAME'
+        if not is_atrous and strides > 1:
+            pad = kernel_size - 1
+            pad_beg = pad // 2
+            pad_end = pad - pad_beg
+            if self._data_format == 'channels_first':
+                x = tf.pad(x, [[0, 0], [0, 0], [pad_beg, pad_end], [pad_beg, pad_end]])
+            else:
+                x = tf.pad(x, [[0, 0], [pad_beg, pad_end], [pad_beg, pad_end], [0, 0]])
+            padding = 'VALID'
+        return tf.layers.conv2d(
+            inputs=x,
+            kernel_size=kernel_size,
+            filters=filters,
+            strides=strides,
+            padding=padding,
+            use_bias=False,
+            data_format=self._data_format)
+
+    def _batch_norm(self, x):
+        axis = 1 if self._data_format == 'channels_first' else -1
+        return tf.layers.batch_normalization(inputs=x, momentum=self._batch_norm_decay, epsilon=self._batch_norm_epsilon,
+                                             axis=axis, training=self._is_training)
+
+    def _fully_connected(self, x, out_dim):
+        with tf.name_scope('fully_connected') as name_scope:
+            x = tf.layers.dense(x, out_dim)
+
+        tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
+        return x
+
+    def _avg_pool(self, x, pool_size, stride):
+        with tf.name_scope('avg_pool') as name_scope:
+            x = tf.layers.average_pooling2d(
+                x, pool_size, stride, 'SAME', data_format=self._data_format)
+
+        tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
+        return x
