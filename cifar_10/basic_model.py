@@ -44,10 +44,10 @@ class ResNet(object):
             if in_filter != out_filter:
                 orig_x = self._avg_pool(orig_x, stride, stride)
                 pad = (out_filter - in_filter) // 2
-            if self._data_format == 'channels_first':
-                orig_x = tf.pad(orig_x, [[0, 0], [pad, pad], [0, 0], [0, 0]])
-            else:
-                orig_x = tf.pad(orig_x, [[0, 0], [0, 0], [0, 0], [pad, pad]])
+                if self._data_format == 'channels_first':
+                    orig_x = tf.pad(orig_x, [[0, 0], [pad, pad], [0, 0], [0, 0]])
+                else:
+                    orig_x = tf.pad(orig_x, [[0, 0], [0, 0], [0, 0], [pad, pad]])
 
         x = tf.nn.relu(tf.add(x, orig_x))
 
@@ -60,7 +60,7 @@ class ResNet(object):
         with tf.name_scope('residual_v2') as name_scope:
             if activate_before_residual:
                 x = self._batch_norm(x)
-                x = self._relu(x)
+                x = tf.nn.relu(x)
                 orig_x = x
             else:
                 orig_x = x
@@ -70,7 +70,7 @@ class ResNet(object):
             x = self._cnn(x, 3, out_filter, stride)
 
             x = self._batch_norm(x)
-            x = self._relu(x)
+            x = tf.nn.relu(x)
             x = self._cnn(x, 3, out_filter, [1, 1, 1, 1])
 
         if in_filter != out_filter:
@@ -116,9 +116,19 @@ class ResNet(object):
             data_format=self._data_format)
 
     def _batch_norm(self, x):
-        axis = 1 if self._data_format == 'channels_first' else -1
-        return tf.layers.batch_normalization(inputs=x, momentum=self._batch_norm_decay, epsilon=self._batch_norm_epsilon,
-                                             axis=axis, training=self._is_training)
+        if self._data_format == 'channels_first':
+            data_format = 'NCHW'
+        else:
+            data_format = 'NHWC'
+        return tf.contrib.layers.batch_norm(
+            x,
+            decay=self._batch_norm_decay,
+            center=True,
+            scale=True,
+            epsilon=self._batch_norm_epsilon,
+            is_training=self._is_training,
+            fused=True,
+            data_format=data_format)
 
     def _fully_connected(self, x, out_dim):
         with tf.name_scope('fully_connected') as name_scope:
@@ -129,8 +139,19 @@ class ResNet(object):
 
     def _avg_pool(self, x, pool_size, stride):
         with tf.name_scope('avg_pool') as name_scope:
+            #
             x = tf.layers.average_pooling2d(
                 x, pool_size, stride, 'SAME', data_format=self._data_format)
 
+        tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
+        return x
+
+    def _global_avg_pool(self, x):
+        with tf.name_scope('global_avg_pool') as name_scope:
+            assert x.get_shape().ndims == 4
+            if self._data_format == 'channels_first':
+                x = tf.reduce_mean(x, [2, 3])
+            else:
+                x = tf.reduce_mean(x, [1, 2])
         tf.logging.info('image after unit %s: %s', name_scope, x.get_shape())
         return x

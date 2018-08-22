@@ -1,3 +1,4 @@
+# coding=utf-8
 import tensorflow as tf
 import os
 
@@ -38,7 +39,8 @@ class Cifar10Dataset(object):
         )
         image = tf.decode_raw(features['image'], tf.int8)
         image.set_shape([DEPTH * HEIGHT * WIDTH])
-        image = tf.cast(tf.reshape(image, [DEPTH, HEIGHT, WIDTH]), tf.float32)
+        # 转成[ channel, height, width]
+        image = tf.cast(tf.transpose(tf.reshape(image, [DEPTH, HEIGHT, WIDTH]), [1, 2, 0]), tf.float32)
         label = tf.cast(features['label'], tf.int32)
         if self._subset == 'train' and self._use_distortion:
             image = self.preprocess(image)
@@ -57,7 +59,7 @@ class Cifar10Dataset(object):
 
         dataset = dataset.batch(batch_size)
         iterator = dataset.make_one_shot_iterator()
-        images, labels = iterator.next()
+        images, labels = iterator.get_next()
         return images, labels
 
     @staticmethod
